@@ -3,8 +3,30 @@ import {
 	INodeExecutionData,
 	INodeType,
 	INodeTypeDescription,
+	IDataObject,
 	NodeOperationError,
+	NodeApiError,
 } from 'n8n-workflow';
+
+interface IAdditionalFields extends IDataObject {
+	page?: number;
+	size?: number;
+	sortDirection?: 'ASC' | 'DESC';
+	sortField?: 'createdAt' | 'size' | 'name';
+}
+
+interface ISearchOptions extends IDataObject {
+	highlight?: boolean;
+	length?: number;
+}
+
+interface ILeakResponse extends IDataObject {
+	content?: any[];
+	totalElements?: number;
+	totalPages?: number;
+	size?: number;
+	number?: number;
+}
 
 export class KaduuLeaks implements INodeType {
 	description: INodeTypeDescription = {
@@ -26,6 +48,14 @@ export class KaduuLeaks implements INodeType {
 				required: true,
 			},
 		],
+		requestDefaults: {
+			baseURL: 'https://app.leak.center/svc-saas',
+			headers: {
+				Accept: 'application/json',
+				'Content-Type': 'application/json',
+			},
+			timeout: 10000,
+		},
 		properties: [
 			{
 				displayName: 'Resource',
@@ -59,7 +89,7 @@ export class KaduuLeaks implements INodeType {
 					},
 					{
 						name: 'Search',
-						value: 'search', 
+						value: 'search',
 						description: 'Search through leak content',
 						action: 'Search leaks',
 					},
@@ -157,7 +187,7 @@ export class KaduuLeaks implements INodeType {
 								value: 'ASC',
 							},
 							{
-								name: 'Descending', 
+								name: 'Descending',
 								value: 'DESC',
 							},
 						],
@@ -174,7 +204,7 @@ export class KaduuLeaks implements INodeType {
 							},
 							{
 								name: 'Size',
-								value: 'size', 
+								value: 'size',
 							},
 							{
 								name: 'Name',
@@ -227,88 +257,134 @@ export class KaduuLeaks implements INodeType {
 		const resource = this.getNodeParameter('resource', 0) as string;
 		const operation = this.getNodeParameter('operation', 0) as string;
 
-		let responseData;
+		let responseData: ILeakResponse | undefined;
 
 		for (let i = 0; i < items.length; i++) {
 			try {
 				if (resource === 'leak') {
 					if (operation === 'browse') {
 						const name = this.getNodeParameter('name', i) as string;
-						const additionalFields = this.getNodeParameter('additionalFields', i) as {
-							page?: number;
-							size?: number;
-							sortDirection?: string;
-							sortField?: string;
+						const additionalFields = this.getNodeParameter(
+							'additionalFields',
+							i,
+						) as IAdditionalFields;
+
+						const qs: IDataObject = {
+							...additionalFields,
+							name,
 						};
 
-						const qs: any = {
-							page: additionalFields.page || 0,
-							size: additionalFields.size || 10,
-							sortDirection: additionalFields.sortDirection || 'DESC',
-							sortField: additionalFields.sortField || 'createdAt',
-						};
-
-						if (name) {
-							qs.name = name;
+						try {
+							responseData = await this.helpers.requestWithAuthentication.call(
+								this,
+								'kaduuOAuth2Api',
+								{
+									method: 'GET',
+									url: '/leak',
+									qs,
+									json: true,
+								},
+							);
+						} catch (error) {
+							throw new NodeApiError(this.getNode(), error);
 						}
-
-						responseData = await this.helpers.requestWithAuthentication.call(this, 'kaduuOAuth2Api', {
-							method: 'GET',
-							url: '/leak',
-							qs,
-							json: true,
-						});
-
 					} else if (operation === 'search') {
 						const query = this.getNodeParameter('query', i) as string;
-						const additionalFields = this.getNodeParameter('additionalFields', i) as {
-							page?: number;
-							size?: number;
-							sortDirection?: string;
-							sortField?: string;
-						};
-						const searchOptions = this.getNodeParameter('searchOptions', i) as {
-							highlight?: boolean;
-							length?: number;
-						};
+						const additionalFields = this.getNodeParameter(
+							'additionalFields',
+							i,
+						) as IAdditionalFields;
+						const searchOptions = this.getNodeParameter('searchOptions', i) as ISearchOptions;
 
-						const qs: any = {
+						if (query.length < 3 || query.length > 10000) {
+							throw new NodeOperationError(
+								this.getNode(),
+								'Search query must be between 3 and 10000 characters long',
+								{ itemIndex: i },
+							);
+						}
+
+						const qs = {
 							query,
-							page: additionalFields.page || 0,
-							size: additionalFields.size || 10,
-							sortDirection: additionalFields.sortDirection || 'DESC',
-							sortField: additionalFields.sortField || 'createdAt',
-							highlight: searchOptions.highlight || false,
-							length: searchOptions.length || 1000,
+							page: additionalFields.page ?? 0,
+							size: additionalFields.size ?? 10,
+							sortDirection: additionalFields.sortDirection ?? 'DESC',
+							sortField: additionalFields.sortField ?? 'createdAt',
+							highlight: searchOptions.highlight ?? false,
+							length: searchOptions.length ?? 1000,
 						};
 
-						responseData = await this.helpers.requestWithAuthentication.call(this, 'kaduuOAuth2Api', {
-							method: 'GET',
-							url: '/leak/search',
-							qs,
-							json: true,
-						});
-
+						try {
+							responseData = await this.helpers.requestWithAuthentication.call(
+								this,
+								'kaduuOAuth2Api',
+								{
+									method: 'GET',
+									url: '/leak/search',
+									qs,
+									json: true,
+								},
+							);
+						} catch (error) {
+							throw new NodeApiError(this.getNode(), error);
+						}
 					} else if (operation === 'get') {
 						const leakId = this.getNodeParameter('leakId', i) as string;
 
-						responseData = await this.helpers.requestWithAuthentication.call(this, 'kaduuOAuth2Api', {
-							method: 'GET',
-							url: `/leak/${leakId}`,
-							json: true,
-						});
+						if (!leakId) {
+							throw new NodeOperationError(
+								this.getNode(),
+								'Leak ID is required',
+								{ itemIndex: i },
+							);
+						}
+
+						try {
+							responseData = await this.helpers.requestWithAuthentication.call(
+								this,
+								'kaduuOAuth2Api',
+								{
+									method: 'GET',
+									url: `/leak/${leakId}`,
+									json: true,
+								},
+							);
+						} catch (error) {
+							throw new NodeApiError(this.getNode(), error);
+						}
 					}
 				}
 
 				if (Array.isArray(responseData?.content)) {
-					returnData.push.apply(returnData, responseData.content.map(item => ({ json: item })));
+					returnData.push.apply(
+						returnData,
+						responseData.content.map((item) => ({
+							json: {
+								...item,
+								_metadata: {
+									totalElements: responseData?.totalElements,
+									totalPages: responseData?.totalPages,
+									currentPage: responseData?.number,
+									pageSize: responseData?.size,
+								},
+							},
+						})),
+					);
+				} else if (responseData) {
+					returnData.push({ json: responseData as IDataObject });
 				} else {
-					returnData.push({ json: responseData });
+					throw new NodeOperationError(this.getNode(), 'No valid response data received');
 				}
-
 			} catch (error) {
 				if (this.continueOnFail()) {
-					returnData.push({ json: { error: error.message } });
+					returnData.push({
+						json: {
+							error: error.message,
+							_error: error.description ?? error.message,
+							_node: this.getNode().name,
+							_itemIndex: i,
+						},
+					});
 					continue;
 				}
 				throw error;
