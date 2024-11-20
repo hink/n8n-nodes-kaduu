@@ -1,7 +1,7 @@
 {
   "name": "n8n-nodes-kaduu",
   "version": "0.1.0",
-  "description": "Kaduu API Nodes",
+  "description": "n8n Kaduu API Nodes",
   "keywords": [
     "n8n-community-node-package"
   ],
